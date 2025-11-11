@@ -56,11 +56,58 @@ A comprehensive, layout-aware PDF parser for extracting text, images, and tables
    # Download from https://www.ghostscript.com/
    ```
 
+### Create Virtual Environment (Recommended)
+
+It's recommended to use a virtual environment to isolate dependencies:
+
+**Using venv (built-in):**
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+**Using uv (creates venv automatically):**
+```bash
+uv venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+```
+
 ### Install Dependencies
+
+You can install dependencies using either classic pip or the faster uv package manager:
+
+#### Option 1: Using pip (Classic)
 
 ```bash
 pip install -r requirements.txt
 ```
+
+#### Option 2: Using uv (Faster Alternative)
+
+[uv](https://github.com/astral-sh/uv) is a fast Python package installer written in Rust. It's 10-100x faster than pip.
+
+```bash
+# Install uv first (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install dependencies with uv
+uv pip install -r requirements.txt
+```
+
+Or on Windows (PowerShell):
+```powershell
+# Install uv
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# Install dependencies
+uv pip install -r requirements.txt
+```
+
+**Benefits of using uv:**
+- 🚀 10-100x faster installation
+- 📦 Better dependency resolution
+- 🔒 More reliable and reproducible builds
+- 💾 Disk space efficient with global cache
 
 ## Quick Start
 
@@ -358,6 +405,24 @@ Complete parsed document data:
 2. **Layout-aware off**: Set `layout_aware=False` for simple text extraction
 3. **Choose the right method**: PyMuPDF is generally fastest for text
 4. **Batch processing**: Process multiple PDFs in parallel using multiprocessing
+5. **Use uv for faster installs**: Install dependencies with `uv pip install` for 10-100x faster installation
+
+## Package Manager Quick Reference
+
+Here's a quick comparison of common commands between pip and uv:
+
+| Task | pip | uv |
+|------|-----|-----|
+| Install from requirements.txt | `pip install -r requirements.txt` | `uv pip install -r requirements.txt` |
+| Install single package | `pip install package-name` | `uv pip install package-name` |
+| Install with version | `pip install package==1.0.0` | `uv pip install package==1.0.0` |
+| Upgrade package | `pip install --upgrade package` | `uv pip install --upgrade package` |
+| Uninstall package | `pip uninstall package` | `uv pip uninstall package` |
+| List installed packages | `pip list` | `uv pip list` |
+| Freeze requirements | `pip freeze > requirements.txt` | `uv pip freeze > requirements.txt` |
+| Create virtual env | `python -m venv venv` | `uv venv` |
+
+**Note**: uv commands work exactly like pip commands but are significantly faster. You can simply replace `pip` with `uv pip` in most cases.
 
 ## Limitations
 
