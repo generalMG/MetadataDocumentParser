@@ -1,0 +1,17 @@
+# Core PDF processing libraries
+PyMuPDF>=1.23.0  # fitz - Fast, comprehensive PDF processing
+pdfplumber>=0.10.0  # Excellent text extraction with layout awareness
+
+# Table extraction libraries
+camelot-py[cv]>=0.11.0  # Advanced table extraction with lattice and stream modes
+tabula-py>=2.8.0  # Alternative table extraction using Java-based Tabula
+
+# Image processing (required by camelot)
+opencv-python>=4.8.0  # Computer vision library for image processing
+Pillow>=10.0.0  # Image processing
+
+# Data handling
+pandas>=2.0.0  # Data manipulation and analysis
+
+# Additional dependencies for camelot
+ghostscript>=0.7  # PostScript and PDF interpreter
