@@ -72,6 +72,18 @@ class TableData:
 
 
 @dataclass
+class FormulaData:
+    """Represents an extracted mathematical formula"""
+    formula_index: int
+    page_num: int
+    bbox: Tuple[float, float, float, float]
+    formula_text: str  # Original text representation
+    latex: Optional[str] = None  # LaTeX conversion (if available)
+    confidence: float = 0.0  # Detection confidence score
+    image_bytes: Optional[bytes] = None  # Formula as image
+
+
+@dataclass
 class DocumentMetadata:
     """PDF document metadata"""
     title: Optional[str] = None
@@ -93,8 +105,10 @@ class ParsedDocument:
     text_blocks: List[TextBlock] = field(default_factory=list)
     images: List[ImageData] = field(default_factory=list)
     tables: List[TableData] = field(default_factory=list)
+    formulas: List[FormulaData] = field(default_factory=list)
     extraction_method: str = "unknown"
     parsing_time: float = 0.0
+    column_layout: Optional[str] = None  # 'single', 'double', 'multi'
 
 
 class PDFMetadataParser:
@@ -126,9 +140,11 @@ class PDFMetadataParser:
         extract_text: bool = True,
         extract_images: bool = True,
         extract_tables: bool = True,
+        extract_formulas: bool = False,
         text_method: str = "pymupdf",
         table_method: str = "camelot",
-        layout_aware: bool = True
+        layout_aware: bool = True,
+        column_aware: bool = True
     ) -> ParsedDocument:
         """
         Parse the PDF document and extract all requested content.
@@ -137,9 +153,11 @@ class PDFMetadataParser:
             extract_text: Whether to extract text content
             extract_images: Whether to extract images
             extract_tables: Whether to extract tables
+            extract_formulas: Whether to extract and detect mathematical formulas
             text_method: Method for text extraction ('pymupdf', 'pdfplumber')
             table_method: Method for table extraction ('camelot', 'tabula')
             layout_aware: Whether to preserve layout information
+            column_aware: Whether to detect columns and fix reading order
 
         Returns:
             ParsedDocument containing all extracted data
@@ -165,6 +183,11 @@ class PDFMetadataParser:
             else:
                 print(f"Warning: {text_method} not available, skipping text extraction")
 
+            # Apply column-aware reading order if requested
+            if column_aware and result.text_blocks:
+                result.column_layout = self._detect_column_layout(result.text_blocks)
+                result.text_blocks = self._apply_reading_order(result.text_blocks, result.column_layout)
+
         # Extract images
         if extract_images and PYMUPDF_AVAILABLE:
             result.images = self._extract_images_pymupdf()
@@ -177,6 +200,10 @@ class PDFMetadataParser:
                 result.tables = self._extract_tables_tabula()
             else:
                 print(f"Warning: {table_method} not available, skipping table extraction")
+
+        # Extract formulas
+        if extract_formulas and PYMUPDF_AVAILABLE:
+            result.formulas = self._extract_formulas(result.text_blocks)
 
         result.parsing_time = time.time() - start_time
         return result
@@ -544,9 +571,354 @@ class PDFMetadataParser:
                 }
                 for tbl in parsed_doc.tables
             ],
+            "formulas": [
+                {
+                    "formula_index": formula.formula_index,
+                    "page_num": formula.page_num,
+                    "bbox": formula.bbox,
+                    "formula_text": formula.formula_text,
+                    "latex": formula.latex,
+                    "confidence": formula.confidence
+                }
+                for formula in parsed_doc.formulas
+            ],
             "extraction_method": parsed_doc.extraction_method,
-            "parsing_time": parsed_doc.parsing_time
+            "parsing_time": parsed_doc.parsing_time,
+            "column_layout": parsed_doc.column_layout
         }
+
+    def _detect_column_layout(self, text_blocks: List[TextBlock]) -> str:
+        """
+        Detect column layout of the document.
+
+        Args:
+            text_blocks: List of text blocks from the document
+
+        Returns:
+            'single', 'double', or 'multi' column layout
+        """
+        if not text_blocks:
+            return 'single'
+
+        # Group blocks by page
+        pages_blocks = {}
+        for block in text_blocks:
+            if block.page_num not in pages_blocks:
+                pages_blocks[block.page_num] = []
+            pages_blocks[block.page_num].append(block)
+
+        # Analyze each page to detect columns
+        column_counts = []
+
+        for page_num, blocks in pages_blocks.items():
+            if not blocks:
+                continue
+
+            # Get page width from first block or use default
+            page_width = max(block.bbox[2] for block in blocks)
+
+            # Collect x-centers of all blocks
+            x_centers = [(block.bbox[0] + block.bbox[2]) / 2 for block in blocks]
+
+            if len(x_centers) < 3:
+                column_counts.append(1)
+                continue
+
+            # Use clustering to detect columns
+            # Simple approach: divide page into potential column regions
+            # and see if blocks cluster around specific x-positions
+
+            # Try to detect gaps in x-positions (column boundaries)
+            x_centers_sorted = sorted(x_centers)
+
+            # Calculate gaps between consecutive x-centers
+            gaps = []
+            for i in range(len(x_centers_sorted) - 1):
+                gap = x_centers_sorted[i + 1] - x_centers_sorted[i]
+                gaps.append((gap, x_centers_sorted[i]))
+
+            # Find significant gaps (potential column boundaries)
+            if gaps:
+                avg_gap = sum(g[0] for g in gaps) / len(gaps)
+                std_gap = (sum((g[0] - avg_gap) ** 2 for g in gaps) / len(gaps)) ** 0.5
+
+                # Significant gap is > mean + 1.5 * std
+                threshold = avg_gap + 1.5 * std_gap
+                significant_gaps = [g for g in gaps if g[0] > threshold]
+
+                # Number of columns = number of significant gaps + 1
+                num_columns = len(significant_gaps) + 1
+                column_counts.append(min(num_columns, 3))  # Cap at 3 columns
+            else:
+                column_counts.append(1)
+
+        # Determine overall layout
+        if not column_counts:
+            return 'single'
+
+        avg_columns = sum(column_counts) / len(column_counts)
+
+        if avg_columns < 1.5:
+            return 'single'
+        elif avg_columns < 2.5:
+            return 'double'
+        else:
+            return 'multi'
+
+    def _apply_reading_order(self, text_blocks: List[TextBlock], column_layout: str) -> List[TextBlock]:
+        """
+        Apply proper reading order based on detected column layout.
+
+        For multi-column documents, sorts text left-to-right, top-to-bottom.
+        For single-column documents, sorts top-to-bottom only.
+
+        Args:
+            text_blocks: List of text blocks
+            column_layout: Detected column layout ('single', 'double', 'multi')
+
+        Returns:
+            Sorted list of text blocks in reading order
+        """
+        if not text_blocks or column_layout == 'single':
+            # Simple top-to-bottom sorting
+            return sorted(text_blocks, key=lambda b: (b.page_num, b.bbox[1]))
+
+        # For multi-column layout, we need to sort by columns
+        sorted_blocks = []
+
+        # Group by page
+        pages = {}
+        for block in text_blocks:
+            if block.page_num not in pages:
+                pages[block.page_num] = []
+            pages[block.page_num].append(block)
+
+        # Process each page
+        for page_num in sorted(pages.keys()):
+            page_blocks = pages[page_num]
+
+            if not page_blocks:
+                continue
+
+            # Determine column boundaries
+            page_width = max(block.bbox[2] for block in page_blocks)
+
+            if column_layout == 'double':
+                # Two-column layout: split at middle
+                mid_point = page_width / 2
+
+                # Assign blocks to columns based on their center x-coordinate
+                left_column = []
+                right_column = []
+
+                for block in page_blocks:
+                    x_center = (block.bbox[0] + block.bbox[2]) / 2
+
+                    if x_center < mid_point:
+                        left_column.append(block)
+                    else:
+                        right_column.append(block)
+
+                # Sort each column by vertical position
+                left_column.sort(key=lambda b: b.bbox[1])
+                right_column.sort(key=lambda b: b.bbox[1])
+
+                # Add left column first, then right column
+                sorted_blocks.extend(left_column)
+                sorted_blocks.extend(right_column)
+
+            else:  # multi-column
+                # For 3+ columns, use clustering approach
+                # Extract x-centers
+                blocks_with_centers = [(b, (b.bbox[0] + b.bbox[2]) / 2) for b in page_blocks]
+
+                # Sort blocks by x-center to identify columns
+                blocks_with_centers.sort(key=lambda x: x[1])
+
+                # Group into columns (simple approach: divide into thirds)
+                num_columns = 3
+                column_width = page_width / num_columns
+
+                columns = [[] for _ in range(num_columns)]
+
+                for block, x_center in blocks_with_centers:
+                    col_idx = min(int(x_center / column_width), num_columns - 1)
+                    columns[col_idx].append(block)
+
+                # Sort each column by vertical position and add to result
+                for column in columns:
+                    column.sort(key=lambda b: b.bbox[1])
+                    sorted_blocks.extend(column)
+
+        return sorted_blocks
+
+    def _extract_formulas(self, text_blocks: List[TextBlock]) -> List[FormulaData]:
+        """
+        Extract mathematical formulas from text blocks using heuristic detection.
+
+        This uses classic ML/pattern matching (no deep learning) to identify
+        formula-like text blocks based on:
+        - Special mathematical characters
+        - Font characteristics
+        - Layout patterns
+
+        Args:
+            text_blocks: List of extracted text blocks
+
+        Returns:
+            List of detected formulas
+        """
+        formulas = []
+        formula_index = 0
+
+        # Mathematical symbols commonly found in formulas
+        math_symbols = set('∫∑∏√±×÷≈≠≤≥∞∂∇αβγδεζηθλμπρσφψω')
+        math_chars = set('+-*/=()[]{}^_∈∉⊂⊃∪∩')
+
+        doc = fitz.open(self.pdf_path) if PYMUPDF_AVAILABLE else None
+
+        for block in text_blocks:
+            text = block.text.strip()
+
+            if not text or len(text) < 2:
+                continue
+
+            # Calculate formula likelihood score
+            score = 0.0
+
+            # Check for mathematical symbols
+            math_symbol_count = sum(1 for c in text if c in math_symbols)
+            math_char_count = sum(1 for c in text if c in math_chars)
+
+            if math_symbol_count > 0:
+                score += math_symbol_count * 0.3
+
+            if math_char_count > 0:
+                score += math_char_count * 0.1
+
+            # Check for common formula patterns
+            if any(pattern in text for pattern in ['=', '∫', '∑', '∏', '√', '∂', '∇']):
+                score += 0.5
+
+            # Check for superscripts/subscripts patterns (^, _)
+            if '^' in text or '_' in text:
+                score += 0.3
+
+            # Check for fraction-like patterns (a/b where a, b are short)
+            import re
+            if re.search(r'\w+/\w+', text):
+                score += 0.2
+
+            # Check font size (formulas are often in different size)
+            if block.font_size and block.font_size < 10:
+                score += 0.2
+
+            # Check for isolated blocks (formulas are often standalone)
+            if len(text) < 50 and math_char_count > len(text) * 0.1:
+                score += 0.3
+
+            # If score exceeds threshold, consider it a formula
+            if score >= 0.7:
+                # Try to extract formula image if document is available
+                formula_image = None
+                if doc:
+                    try:
+                        page = doc[block.page_num]
+                        # Extract region as image
+                        bbox = fitz.Rect(block.bbox)
+                        pix = page.get_pixmap(clip=bbox, matrix=fitz.Matrix(2, 2))  # 2x resolution
+                        formula_image = pix.tobytes("png")
+                    except:
+                        pass
+
+                # Attempt basic LaTeX conversion
+                latex = self._text_to_latex_heuristic(text)
+
+                formulas.append(FormulaData(
+                    formula_index=formula_index,
+                    page_num=block.page_num,
+                    bbox=block.bbox,
+                    formula_text=text,
+                    latex=latex,
+                    confidence=min(score, 1.0),
+                    image_bytes=formula_image
+                ))
+
+                formula_index += 1
+
+        if doc:
+            doc.close()
+
+        return formulas
+
+    def _text_to_latex_heuristic(self, text: str) -> str:
+        """
+        Convert text to LaTeX using heuristic rules (classic approach, no DL).
+
+        This is a basic conversion and won't handle complex formulas perfectly.
+        For better results, consider using external services or manual annotation.
+
+        Args:
+            text: Formula text
+
+        Returns:
+            LaTeX representation
+        """
+        latex = text
+
+        # Greek letters (if already in Unicode)
+        greek_map = {
+            'α': r'\alpha', 'β': r'\beta', 'γ': r'\gamma', 'δ': r'\delta',
+            'ε': r'\epsilon', 'ζ': r'\zeta', 'η': r'\eta', 'θ': r'\theta',
+            'λ': r'\lambda', 'μ': r'\mu', 'π': r'\pi', 'ρ': r'\rho',
+            'σ': r'\sigma', 'φ': r'\phi', 'ψ': r'\psi', 'ω': r'\omega',
+            'Δ': r'\Delta', 'Σ': r'\Sigma', 'Π': r'\Pi', 'Ω': r'\Omega'
+        }
+
+        for greek, latex_greek in greek_map.items():
+            latex = latex.replace(greek, latex_greek)
+
+        # Mathematical symbols
+        symbol_map = {
+            '≈': r'\approx',
+            '≠': r'\neq',
+            '≤': r'\leq',
+            '≥': r'\geq',
+            '∞': r'\infty',
+            '∂': r'\partial',
+            '∇': r'\nabla',
+            '∫': r'\int',
+            '∑': r'\sum',
+            '∏': r'\prod',
+            '√': r'\sqrt',
+            '±': r'\pm',
+            '×': r'\times',
+            '÷': r'\div',
+            '∈': r'\in',
+            '∉': r'\notin',
+            '⊂': r'\subset',
+            '⊃': r'\supset',
+            '∪': r'\cup',
+            '∩': r'\cap',
+        }
+
+        for symbol, latex_symbol in symbol_map.items():
+            latex = latex.replace(symbol, latex_symbol)
+
+        # Handle superscripts (simplified - only works for simple cases)
+        # a^b -> a^{b}
+        import re
+        latex = re.sub(r'\^(\w)', r'^{\1}', latex)
+
+        # Handle subscripts
+        # a_b -> a_{b}
+        latex = re.sub(r'_(\w)', r'_{\1}', latex)
+
+        # Wrap in math mode if not already
+        if not latex.startswith('$'):
+            latex = f'${latex}$'
+
+        return latex
 
     def save_images(self, parsed_doc: ParsedDocument, output_dir: str) -> List[str]:
         """

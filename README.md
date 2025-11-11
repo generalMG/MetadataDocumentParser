@@ -6,6 +6,8 @@ A comprehensive, layout-aware PDF parser for extracting text, images, and tables
 
 - **Metadata Extraction**: Extracts complete PDF metadata (title, author, dates, page info, etc.)
 - **Layout-Aware Text Extraction**: Preserves document structure, font information, and reading order
+- **Column-Aware Reading Order**: Automatically detects multi-column layouts (research papers, newspapers) and fixes reading order
+- **Formula Detection & LaTeX Conversion**: Detects mathematical formulas and converts to LaTeX (classic ML, no GPU required)
 - **Image Extraction**: Extracts embedded images with position and metadata
 - **Table Extraction**: Advanced table detection and extraction
 - **Multiple Extraction Methods**: Compare different libraries for optimal results
@@ -75,7 +77,9 @@ result = parser.parse(
     extract_text=True,
     extract_images=True,
     extract_tables=True,
-    layout_aware=True
+    extract_formulas=True,  # NEW: Extract mathematical formulas
+    layout_aware=True,
+    column_aware=True  # NEW: Fix reading order for multi-column layouts
 )
 
 # Access results
@@ -175,13 +179,59 @@ with open("parsed_document.json", "w") as f:
     json.dump(data, f, indent=2)
 ```
 
-### 6. Layout-Aware Reading Order
+### 6. Column-Aware Reading Order (for Research Papers, Newspapers)
 
 ```python
 parser = PDFMetadataParser("document.pdf")
-result = parser.parse(layout_aware=True)
 
-# Sort blocks by page and vertical position
+# Enable column-aware reading order
+result = parser.parse(
+    extract_text=True,
+    layout_aware=True,
+    column_aware=True  # Automatically detects and fixes column order
+)
+
+# Check detected layout
+print(f"Detected layout: {result.column_layout}")  # 'single', 'double', or 'multi'
+
+# Text blocks are now in correct reading order (left column, then right column)
+for block in result.text_blocks:
+    print(block.text)
+```
+
+### 7. Formula Detection and LaTeX Conversion
+
+```python
+parser = PDFMetadataParser("document.pdf")
+
+# Extract formulas with heuristic detection (no GPU/DL required)
+result = parser.parse(
+    extract_text=True,
+    extract_formulas=True
+)
+
+# Access detected formulas
+for formula in result.formulas:
+    print(f"Formula: {formula.formula_text}")
+    print(f"LaTeX:   {formula.latex}")
+    print(f"Confidence: {formula.confidence:.2f}")
+
+    # Save formula as image
+    if formula.image_bytes:
+        with open(f"formula_{formula.formula_index}.png", "wb") as f:
+            f.write(formula.image_bytes)
+```
+
+### 8. Simple Reading Order (No Column Detection)
+
+```python
+parser = PDFMetadataParser("document.pdf")
+result = parser.parse(
+    layout_aware=True,
+    column_aware=False  # Disable column detection
+)
+
+# Sort blocks by page and vertical position (simple top-to-bottom)
 sorted_blocks = sorted(
     result.text_blocks,
     key=lambda b: (b.page_num, b.bbox[1])
@@ -204,7 +254,7 @@ for block in sorted_blocks:
 #### `__init__(pdf_path: str)`
 Initialize the parser with a PDF file path.
 
-#### `parse(extract_text=True, extract_images=True, extract_tables=True, text_method="pymupdf", table_method="camelot", layout_aware=True) -> ParsedDocument`
+#### `parse(extract_text=True, extract_images=True, extract_tables=True, extract_formulas=False, text_method="pymupdf", table_method="camelot", layout_aware=True, column_aware=True) -> ParsedDocument`
 
 Parse the PDF document.
 
@@ -212,9 +262,11 @@ Parse the PDF document.
 - `extract_text` (bool): Extract text content
 - `extract_images` (bool): Extract images
 - `extract_tables` (bool): Extract tables
+- `extract_formulas` (bool): Extract and detect mathematical formulas (NEW)
 - `text_method` (str): Method for text extraction ("pymupdf" or "pdfplumber")
 - `table_method` (str): Method for table extraction ("camelot" or "tabula")
 - `layout_aware` (bool): Preserve layout information
+- `column_aware` (bool): Detect columns and fix reading order (NEW)
 
 **Returns:** `ParsedDocument` object containing all extracted data
 
@@ -259,14 +311,26 @@ Represents an extracted table:
 - `data`: Table data as list of lists
 - `extraction_method`: Method used
 
+#### `FormulaData` (NEW)
+Represents a detected mathematical formula:
+- `formula_index`: Index of the formula
+- `page_num`: Page number
+- `bbox`: Bounding box
+- `formula_text`: Original text representation
+- `latex`: LaTeX conversion (heuristic-based)
+- `confidence`: Detection confidence score (0.0-1.0)
+- `image_bytes`: Formula as image (optional)
+
 #### `ParsedDocument`
 Complete parsed document data:
 - `metadata`: DocumentMetadata
 - `text_blocks`: List of TextBlock
 - `images`: List of ImageData
 - `tables`: List of TableData
+- `formulas`: List of FormulaData (NEW)
 - `extraction_method`: Method used
 - `parsing_time`: Time taken to parse
+- `column_layout`: Detected layout ('single', 'double', 'multi') (NEW)
 
 ## Library Comparison
 

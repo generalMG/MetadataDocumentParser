@@ -41,6 +41,7 @@ htmlcov/
 
 # Extracted files
 extracted_images/
+extracted_formulas/
 output/
 *.json
 *.csv

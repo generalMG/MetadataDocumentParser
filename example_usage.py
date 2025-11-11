@@ -211,7 +211,7 @@ def example_export_to_json(pdf_path: str, output_json: str = "parsed_document.js
 
 def example_layout_aware_reading_order(pdf_path: str):
     """Example: Extract text in reading order with layout awareness"""
-    print_section("Example 7: Layout-Aware Reading Order")
+    print_section("Example 7: Layout-Aware Reading Order (OLD - Simple)")
 
     parser = PDFMetadataParser(pdf_path)
 
@@ -220,16 +220,17 @@ def example_layout_aware_reading_order(pdf_path: str):
         extract_images=False,
         extract_tables=False,
         text_method="pymupdf",
-        layout_aware=True
+        layout_aware=True,
+        column_aware=False  # Disable column awareness for comparison
     )
 
     # Sort text blocks by page, then by vertical position (top to bottom)
     sorted_blocks = sorted(result.text_blocks, key=lambda b: (b.page_num, b.bbox[1]))
 
-    print(f"\n📖 Document text in reading order:\n")
+    print(f"\n📖 Document text in simple reading order (top-to-bottom):\n")
 
     current_page = -1
-    for block in sorted_blocks:
+    for block in sorted_blocks[:10]:  # Show first 10 blocks
         if block.page_num != current_page:
             current_page = block.page_num
             print(f"\n{'─' * 80}")
@@ -248,6 +249,94 @@ def example_layout_aware_reading_order(pdf_path: str):
         print(f"{type_icon} {block.text}\n")
 
     return sorted_blocks
+
+
+def example_column_aware_reading_order(pdf_path: str):
+    """Example: Extract text with column-aware reading order (NEW)"""
+    print_section("Example 8: Column-Aware Reading Order (NEW)")
+
+    parser = PDFMetadataParser(pdf_path)
+
+    result = parser.parse(
+        extract_text=True,
+        extract_images=False,
+        extract_tables=False,
+        text_method="pymupdf",
+        layout_aware=True,
+        column_aware=True  # Enable column awareness
+    )
+
+    print(f"\n📰 Detected layout: {result.column_layout or 'unknown'}")
+    print(f"📖 Document text in column-aware reading order:\n")
+
+    current_page = -1
+    for block in result.text_blocks[:10]:  # Show first 10 blocks
+        if block.page_num != current_page:
+            current_page = block.page_num
+            print(f"\n{'─' * 80}")
+            print(f"PAGE {current_page + 1} ({result.column_layout} layout)")
+            print(f"{'─' * 80}\n")
+
+        # Print with block type and position indicator
+        type_icon = {
+            "title": "📌",
+            "heading": "▶",
+            "header": "🔝",
+            "footer": "🔻",
+            "text": "  "
+        }.get(block.block_type, "  ")
+
+        # Show x-position to indicate column
+        x_pos = int(block.bbox[0])
+        print(f"{type_icon} [x={x_pos:3d}] {block.text[:80]}...\n" if len(block.text) > 80 else f"{type_icon} [x={x_pos:3d}] {block.text}\n")
+
+    return result
+
+
+def example_formula_extraction(pdf_path: str):
+    """Example: Extract mathematical formulas from PDF"""
+    print_section("Example 9: Formula Detection and Extraction")
+
+    parser = PDFMetadataParser(pdf_path)
+
+    result = parser.parse(
+        extract_text=True,
+        extract_formulas=True,  # Enable formula extraction
+        extract_images=False,
+        extract_tables=False
+    )
+
+    print(f"\n🔬 Detected {len(result.formulas)} mathematical formulas")
+
+    if result.formulas:
+        print("\n  Formula details:\n")
+        for formula in result.formulas[:5]:  # Show first 5 formulas
+            print(f"  Formula {formula.formula_index} (Page {formula.page_num}):")
+            print(f"    Original text: {formula.formula_text}")
+            print(f"    LaTeX:         {formula.latex}")
+            print(f"    Confidence:    {formula.confidence:.2f}")
+            print(f"    Position:      {formula.bbox}")
+            print()
+
+        # Save formula images if available
+        output_dir = "extracted_formulas"
+        Path(output_dir).mkdir(exist_ok=True)
+
+        saved = 0
+        for formula in result.formulas:
+            if formula.image_bytes:
+                filepath = Path(output_dir) / f"formula_{formula.formula_index}_page_{formula.page_num}.png"
+                with open(filepath, "wb") as f:
+                    f.write(formula.image_bytes)
+                saved += 1
+
+        if saved > 0:
+            print(f"\n  💾 Saved {saved} formula images to '{output_dir}/'")
+    else:
+        print("\n  No formulas detected in this document.")
+        print("  (Formulas require special mathematical characters or symbols)")
+
+    return result
 
 
 def main():
@@ -284,6 +373,8 @@ def main():
         example_compare_methods(pdf_path)
         example_export_to_json(pdf_path)
         example_layout_aware_reading_order(pdf_path)
+        example_column_aware_reading_order(pdf_path)  # NEW
+        example_formula_extraction(pdf_path)  # NEW
 
         print_section("✅ All Examples Completed Successfully")
 
