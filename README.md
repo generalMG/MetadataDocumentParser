@@ -22,6 +22,20 @@ A comprehensive, layout-aware PDF parser for extracting text, images, and tables
   - **JSON format**: Standard JSON export when needed
   - Built-in token comparison to measure savings
 
+## What is TOON?
+
+**TOON (Token-Oriented Object Notation)** is a space-efficient data format designed specifically for LLM input. It reduces token counts by 10-60% compared to JSON while remaining human-readable and structurally similar.
+
+**Key Benefits:**
+- **Token Efficiency**: 30-60% fewer tokens than JSON for typical PDF data
+- **Cost Savings**: Reduced API costs when sending data to LLMs
+- **Better Context Usage**: More content fits in the same context window
+- **Easy to Use**: Drop-in replacement for JSON export with `format="toon"` parameter
+
+**When to use TOON vs JSON:**
+- Use **TOON** (default) when preparing data for LLM input, API calls, or when token efficiency matters
+- Use **JSON** when you need standard JSON for interoperability with existing tools or APIs that require JSON format
+
 ## Supported Libraries
 
 ### Text Extraction
@@ -402,6 +416,55 @@ Compare different extraction methods and return performance metrics.
 
 #### `export_to_dict(parsed_doc: ParsedDocument) -> Dict`
 Export parsed document to dictionary format.
+
+#### `export(parsed_doc: ParsedDocument, format: str = "toon", delimiter: str = ",", indent: int = 2) -> str`
+Export parsed document to specified format (default: TOON).
+
+**Parameters:**
+- `parsed_doc` (ParsedDocument): Parsed document to export
+- `format` (str): Output format - "toon" (default, 30-60% fewer tokens) or "json"
+- `delimiter` (str): TOON delimiter - ',' (comma), '\t' (tab), or '|' (pipe). Tab often provides best token efficiency
+- `indent` (int): JSON indentation (only used if format="json")
+
+**Returns:** Formatted string in requested format
+
+#### `export_to_json(parsed_doc: ParsedDocument, indent: int = 2) -> str`
+Export parsed document to JSON format.
+
+**Parameters:**
+- `parsed_doc` (ParsedDocument): Parsed document to export
+- `indent` (int): JSON indentation (default: 2)
+
+**Returns:** JSON string representation
+
+#### `export_to_toon(parsed_doc: ParsedDocument, delimiter: str = ",") -> str`
+Export parsed document to TOON format for token-efficient LLM input.
+
+**Parameters:**
+- `parsed_doc` (ParsedDocument): Parsed document to export
+- `delimiter` (str): Array delimiter - ',' (comma), '\t' (tab), or '|' (pipe)
+
+**Returns:** TOON formatted string
+
+**Note:** Requires `toon-format` package. Install with: `pip install toon-format`
+
+#### `compare_export_formats(parsed_doc: ParsedDocument) -> Dict[str, Any]`
+Compare token counts between JSON and TOON export formats.
+
+**Parameters:**
+- `parsed_doc` (ParsedDocument): Parsed document to compare
+
+**Returns:** Dictionary containing:
+- `json_tokens`: Token count for JSON format
+- `json_size_bytes`: Size in bytes for JSON
+- `toon_comma_tokens`: Token count for TOON with comma delimiter
+- `toon_comma_size_bytes`: Size in bytes for TOON with comma delimiter
+- `toon_comma_savings_percent`: Percentage savings vs JSON
+- `toon_tab_tokens`: Token count for TOON with tab delimiter
+- `toon_tab_size_bytes`: Size in bytes for TOON with tab delimiter
+- `toon_tab_savings_percent`: Percentage savings vs JSON
+- `best_format`: Best performing TOON format
+- `best_savings_percent`: Best savings percentage achieved
 
 #### `save_images(parsed_doc: ParsedDocument, output_dir: str) -> List[str]`
 Save extracted images to disk.
