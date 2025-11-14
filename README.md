@@ -25,6 +25,7 @@ A comprehensive, layout-aware PDF parser for extracting text, images, and tables
 ## What is TOON?
 
 **TOON (Token-Oriented Object Notation)** is a space-efficient data format designed specifically for LLM input. It reduces token counts by 10-60% compared to JSON while remaining human-readable and structurally similar.
+TOON Github: https://github.com/toon-format/toon
 
 **Key Benefits:**
 - **Token Efficiency**: 30-60% fewer tokens than JSON for typical PDF data
