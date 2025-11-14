@@ -14,6 +14,9 @@ Pillow>=10.0.0  # Image processing
 # Data handling
 pandas>=2.0.0  # Data manipulation and analysis
 
+# Token-efficient serialization for LLM input
+toon-format>=0.1.0  # TOON format encoder/decoder - 30-60% token reduction vs JSON
+
 # Additional dependencies for camelot
 ghostscript>=0.7  # PostScript and PDF interpreter
 

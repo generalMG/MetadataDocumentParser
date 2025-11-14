@@ -31,6 +31,12 @@ except ImportError:
     CAMELOT_AVAILABLE = False
 
 try:
+    from toon_format import encode as toon_encode, count_tokens, compare_formats, EncodeOptions
+    TOON_AVAILABLE = True
+except ImportError:
+    TOON_AVAILABLE = False
+
+try:
     import tabula
     TABULA_AVAILABLE = True
 except ImportError:
@@ -622,7 +628,15 @@ class PDFMetadataParser:
         return results
 
     def export_to_dict(self, parsed_doc: ParsedDocument) -> Dict[str, Any]:
-        """Export parsed document to dictionary format"""
+        """
+        Export parsed document to dictionary format.
+
+        Args:
+            parsed_doc: Parsed document to export
+
+        Returns:
+            Dictionary representation of the document
+        """
         return {
             "metadata": {
                 "title": parsed_doc.metadata.title,
@@ -683,6 +697,134 @@ class PDFMetadataParser:
             "extraction_method": parsed_doc.extraction_method,
             "parsing_time": parsed_doc.parsing_time,
             "column_layout": parsed_doc.column_layout
+        }
+
+    def export_to_json(self, parsed_doc: ParsedDocument, indent: int = 2) -> str:
+        """
+        Export parsed document to JSON format.
+
+        Args:
+            parsed_doc: Parsed document to export
+            indent: JSON indentation (default: 2)
+
+        Returns:
+            JSON string representation
+        """
+        import json
+        data = self.export_to_dict(parsed_doc)
+        return json.dumps(data, indent=indent, default=str)
+
+    def export_to_toon(self, parsed_doc: ParsedDocument, delimiter: str = ",") -> str:
+        """
+        Export parsed document to TOON format for token-efficient LLM input.
+
+        TOON achieves 30-60% token reduction vs JSON for uniform arrays.
+        Default export format for this parser.
+
+        Args:
+            parsed_doc: Parsed document to export
+            delimiter: Array delimiter: ',' (comma), '\\t' (tab), or '|' (pipe)
+                      Tab often provides best token efficiency
+
+        Returns:
+            TOON formatted string
+
+        Raises:
+            RuntimeError: If toon-format package is not installed
+
+        Example:
+            >>> parser = PDFMetadataParser("doc.pdf")
+            >>> result = parser.parse()
+            >>> toon_str = parser.export_to_toon(result, delimiter="\\t")
+        """
+        if not TOON_AVAILABLE:
+            raise RuntimeError(
+                "toon-format package is required for TOON export. "
+                "Install it with: pip install toon-format"
+            )
+
+        data = self.export_to_dict(parsed_doc)
+        options = EncodeOptions(indent=2, delimiter=delimiter, lengthMarker='#')
+        return toon_encode(data, options=options)
+
+    def export(self, parsed_doc: ParsedDocument, format: str = "toon",
+              delimiter: str = ",", indent: int = 2) -> str:
+        """
+        Export parsed document to specified format.
+
+        Args:
+            parsed_doc: Parsed document to export
+            format: Output format - "toon" (default, 30-60% fewer tokens) or "json"
+            delimiter: TOON delimiter: ',' (comma), '\\t' (tab), or '|' (pipe)
+            indent: JSON indentation (only used if format="json")
+
+        Returns:
+            Formatted string in requested format
+
+        Example:
+            >>> parser = PDFMetadataParser("doc.pdf")
+            >>> result = parser.parse()
+            >>> # TOON format (default - token-efficient for LLMs)
+            >>> toon_output = parser.export(result)
+            >>> # JSON format (explicit)
+            >>> json_output = parser.export(result, format="json")
+        """
+        if format.lower() == "json":
+            return self.export_to_json(parsed_doc, indent=indent)
+        elif format.lower() == "toon":
+            return self.export_to_toon(parsed_doc, delimiter=delimiter)
+        else:
+            raise ValueError(f"Unsupported format: {format}. Use 'toon' or 'json'")
+
+    def compare_export_formats(self, parsed_doc: ParsedDocument) -> Dict[str, Any]:
+        """
+        Compare token counts between JSON and TOON export formats.
+
+        Args:
+            parsed_doc: Parsed document to compare
+
+        Returns:
+            Dictionary with format comparison including token counts and savings
+
+        Example:
+            >>> parser = PDFMetadataParser("doc.pdf")
+            >>> result = parser.parse()
+            >>> comparison = parser.compare_export_formats(result)
+            >>> print(f"TOON uses {comparison['toon_tokens']} tokens")
+            >>> print(f"JSON uses {comparison['json_tokens']} tokens")
+            >>> print(f"Savings: {comparison['savings_percent']}%")
+        """
+        if not TOON_AVAILABLE:
+            return {
+                "error": "toon-format package not installed",
+                "message": "Install with: pip install toon-format"
+            }
+
+        # Get exports
+        json_output = self.export_to_json(parsed_doc, indent=2)
+        toon_output = self.export_to_toon(parsed_doc, delimiter=",")
+        toon_tab_output = self.export_to_toon(parsed_doc, delimiter="\t")
+
+        # Count tokens
+        json_tokens = count_tokens(json_output)
+        toon_tokens = count_tokens(toon_output)
+        toon_tab_tokens = count_tokens(toon_tab_output)
+
+        # Calculate savings
+        savings_comma = ((json_tokens - toon_tokens) / json_tokens * 100) if json_tokens > 0 else 0
+        savings_tab = ((json_tokens - toon_tab_tokens) / json_tokens * 100) if json_tokens > 0 else 0
+
+        return {
+            "json_tokens": json_tokens,
+            "json_size_bytes": len(json_output.encode('utf-8')),
+            "toon_comma_tokens": toon_tokens,
+            "toon_comma_size_bytes": len(toon_output.encode('utf-8')),
+            "toon_comma_savings_percent": round(savings_comma, 1),
+            "toon_tab_tokens": toon_tab_tokens,
+            "toon_tab_size_bytes": len(toon_tab_output.encode('utf-8')),
+            "toon_tab_savings_percent": round(savings_tab, 1),
+            "best_format": "toon_tab" if toon_tab_tokens < toon_tokens else "toon_comma",
+            "best_savings_percent": round(max(savings_comma, savings_tab), 1)
         }
 
     def _detect_column_layout(self, text_blocks: List[TextBlock]) -> str:

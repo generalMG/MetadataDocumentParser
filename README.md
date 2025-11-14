@@ -17,7 +17,10 @@ A comprehensive, layout-aware PDF parser for extracting text, images, and tables
 - **Image Extraction**: Extracts embedded images with position and metadata
 - **Table Extraction**: Advanced table detection and extraction
 - **Multiple Extraction Methods**: Compare different libraries for optimal results
-- **Export Capabilities**: Save results as JSON or images to disk
+- **Token-Efficient Export**:
+  - **TOON format** (default): 10-60% fewer tokens vs JSON - ideal for LLM input
+  - **JSON format**: Standard JSON export when needed
+  - Built-in token comparison to measure savings
 
 ## Supported Libraries
 
@@ -151,6 +154,9 @@ python example_multi_column.py research_paper.pdf
 
 # Debug and visualize column detection
 python test_column_detection.py research_paper.pdf --header-margin 50 --footer-margin 50
+
+# Test TOON export with token comparison
+python example_toon_export.py research_paper.pdf
 ```
 
 ## Usage Examples
@@ -221,19 +227,45 @@ comparison = parser.compare_extraction_methods()
 print(comparison)
 ```
 
-### 5. Export to JSON
+### 5. Export Parsed Data (TOON/JSON)
+
+**TOON format (default)** - 10-60% fewer tokens vs JSON, ideal for LLM input:
 
 ```python
 parser = PDFMetadataParser("document.pdf")
 result = parser.parse()
 
-# Convert to dictionary
-data = parser.export_to_dict(result)
+# Export to TOON format (default - token-efficient for LLMs)
+toon_output = parser.export(result)  # format="toon" is default
+print(toon_output)
 
-# Save to JSON
-import json
+# Save to file
+with open("parsed_document.toon", "w") as f:
+    f.write(toon_output)
+```
+
+**JSON format (explicit)** - use when you need standard JSON:
+
+```python
+# Export to JSON
+json_output = parser.export(result, format="json")
+
+# Or use dedicated method
+json_output = parser.export_to_json(result, indent=2)
+
+# Save to file
 with open("parsed_document.json", "w") as f:
-    json.dump(data, f, indent=2)
+    f.write(json_output)
+```
+
+**Compare token counts** between formats:
+
+```python
+comparison = parser.compare_export_formats(result)
+
+print(f"JSON tokens: {comparison['json_tokens']:,}")
+print(f"TOON tokens: {comparison['toon_comma_tokens']:,}")
+print(f"Savings: {comparison['toon_comma_savings_percent']}%")
 ```
 
 ### 6. Column-Aware Reading Order (for Research Papers, Newspapers)
