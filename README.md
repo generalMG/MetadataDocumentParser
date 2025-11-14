@@ -6,7 +6,13 @@ A comprehensive, layout-aware PDF parser for extracting text, images, and tables
 
 - **Metadata Extraction**: Extracts complete PDF metadata (title, author, dates, page info, etc.)
 - **Layout-Aware Text Extraction**: Preserves document structure, font information, and reading order
-- **Column-Aware Reading Order**: Automatically detects multi-column layouts (research papers, newspapers) and fixes reading order
+- **Advanced Column Detection**:
+  - Intelligently detects multi-column layouts (research papers, newspapers, magazines)
+  - Handles text with different background colors separately
+  - Avoids text overlaying images
+  - Respects column boundaries and reading order
+  - Configurable header/footer margins for improved accuracy
+- **Column Visualization**: Debug tool to visualize detected column boundaries
 - **Formula Detection & LaTeX Conversion**: Detects mathematical formulas and converts to LaTeX (classic ML, no GPU required)
 - **Image Extraction**: Extracts embedded images with position and metadata
 - **Table Extraction**: Advanced table detection and extraction
@@ -140,7 +146,14 @@ print(f"Tables: {len(result.tables)}")
 ### Run Examples
 
 ```bash
+# Run all examples
 python example_usage.py your_document.pdf
+
+# Test multi-column extraction specifically
+python example_multi_column.py research_paper.pdf
+
+# Debug and visualize column detection
+python test_column_detection.py research_paper.pdf --header-margin 50 --footer-margin 50
 ```
 
 ## Usage Examples
@@ -229,6 +242,7 @@ with open("parsed_document.json", "w") as f:
 ### 6. Column-Aware Reading Order (for Research Papers, Newspapers)
 
 ```python
+# Basic usage with default margins
 parser = PDFMetadataParser("document.pdf")
 
 # Enable column-aware reading order
@@ -244,6 +258,37 @@ print(f"Detected layout: {result.column_layout}")  # 'single', 'double', or 'mul
 # Text blocks are now in correct reading order (left column, then right column)
 for block in result.text_blocks:
     print(block.text)
+```
+
+**Advanced: Custom Header/Footer Margins**
+
+For PDFs with large headers or footers, adjust the margins to improve column detection:
+
+```python
+# Initialize with custom margins (in points, 72 points = 1 inch)
+parser = PDFMetadataParser(
+    "document.pdf",
+    header_margin=100,  # Ignore top 100 points (large header)
+    footer_margin=80    # Ignore bottom 80 points (large footer)
+)
+
+result = parser.parse(
+    extract_text=True,
+    layout_aware=True,
+    column_aware=True
+)
+```
+
+**Visualizing Column Detection**
+
+Debug and verify column detection by creating an annotated PDF:
+
+```python
+parser = PDFMetadataParser("document.pdf")
+
+# Creates a PDF with red borders around detected columns
+output_path = parser.visualize_columns()
+print(f"Annotated PDF saved to: {output_path}")
 ```
 
 ### 7. Formula Detection and LaTeX Conversion
@@ -298,8 +343,13 @@ for block in sorted_blocks:
 
 ### PDFMetadataParser
 
-#### `__init__(pdf_path: str)`
+#### `__init__(pdf_path: str, footer_margin: int = 50, header_margin: int = 50)`
 Initialize the parser with a PDF file path.
+
+**Parameters:**
+- `pdf_path` (str): Path to the PDF file
+- `footer_margin` (int): Height in points of bottom stripe to ignore for column detection (default: 50)
+- `header_margin` (int): Height in points of top stripe to ignore for column detection (default: 50)
 
 #### `parse(extract_text=True, extract_images=True, extract_tables=True, extract_formulas=False, text_method="pymupdf", table_method="camelot", layout_aware=True, column_aware=True) -> ParsedDocument`
 
@@ -325,6 +375,14 @@ Export parsed document to dictionary format.
 
 #### `save_images(parsed_doc: ParsedDocument, output_dir: str) -> List[str]`
 Save extracted images to disk.
+
+#### `visualize_columns(output_path: Optional[str] = None) -> str`
+Create a visual representation of detected columns by drawing red borders around detected column bboxes and numbering them. Useful for debugging and understanding column detection.
+
+**Parameters:**
+- `output_path` (str, optional): Output path for annotated PDF. If not provided, uses `<original_name>-columns.pdf`
+
+**Returns:** Path to the annotated PDF file
 
 ### Data Classes
 

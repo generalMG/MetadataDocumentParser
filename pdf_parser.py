@@ -122,18 +122,25 @@ class PDFMetadataParser:
     - Tabula: Alternative table extraction
     """
 
-    def __init__(self, pdf_path: str):
+    def __init__(self, pdf_path: str, footer_margin: int = 50, header_margin: int = 50,
+                 fast_column_detection: bool = True):
         """
         Initialize the parser with a PDF file path.
 
         Args:
             pdf_path: Path to the PDF file
+            footer_margin: Height (in points) of bottom stripe to ignore for column detection
+            header_margin: Height (in points) of top stripe to ignore for column detection
+            fast_column_detection: Use faster (less accurate) column detection (default: True)
         """
         self.pdf_path = Path(pdf_path)
         if not self.pdf_path.exists():
             raise FileNotFoundError(f"PDF file not found: {pdf_path}")
 
         self.file_size = self.pdf_path.stat().st_size
+        self.footer_margin = footer_margin
+        self.header_margin = header_margin
+        self.fast_column_detection = fast_column_detection
 
     def parse(
         self,
@@ -177,16 +184,25 @@ class PDFMetadataParser:
         # Extract text
         if extract_text:
             if text_method == "pymupdf" and PYMUPDF_AVAILABLE:
-                result.text_blocks = self._extract_text_pymupdf(layout_aware)
+                # Use column-aware extraction for better word reconstruction
+                if column_aware and layout_aware:
+                    result.text_blocks = self._extract_text_pymupdf_with_columns()
+                    # Detect layout from the extracted blocks
+                    result.column_layout = self._detect_column_layout(result.text_blocks)
+                else:
+                    result.text_blocks = self._extract_text_pymupdf(layout_aware)
+                    # Apply column-aware reading order if requested
+                    if column_aware and result.text_blocks:
+                        result.column_layout = self._detect_column_layout(result.text_blocks)
+                        result.text_blocks = self._apply_reading_order(result.text_blocks, result.column_layout)
             elif text_method == "pdfplumber" and PDFPLUMBER_AVAILABLE:
                 result.text_blocks = self._extract_text_pdfplumber(layout_aware)
+                # Apply column-aware reading order if requested
+                if column_aware and result.text_blocks:
+                    result.column_layout = self._detect_column_layout(result.text_blocks)
+                    result.text_blocks = self._apply_reading_order(result.text_blocks, result.column_layout)
             else:
                 print(f"Warning: {text_method} not available, skipping text extraction")
-
-            # Apply column-aware reading order if requested
-            if column_aware and result.text_blocks:
-                result.column_layout = self._detect_column_layout(result.text_blocks)
-                result.text_blocks = self._apply_reading_order(result.text_blocks, result.column_layout)
 
         # Extract images
         if extract_images and PYMUPDF_AVAILABLE:
@@ -281,6 +297,88 @@ class PDFMetadataParser:
                         text=text,
                         bbox=(0, 0, page.rect.width, page.rect.height),
                         page_num=page_num
+                    ))
+
+        doc.close()
+        return text_blocks
+
+    def _extract_text_pymupdf_with_columns(self) -> List[TextBlock]:
+        """
+        Extract text using column-aware method.
+
+        This method first detects columns, then extracts text from each column
+        in reading order. This ensures proper word reconstruction and reading order.
+        """
+        text_blocks = []
+        doc = fitz.open(self.pdf_path)
+
+        for page_num, page in enumerate(doc):
+            # Get column bounding boxes in reading order
+            if self.fast_column_detection:
+                column_bboxes = self._column_boxes_fast(
+                    page,
+                    footer_margin=self.footer_margin,
+                    header_margin=self.header_margin
+                )
+            else:
+                column_bboxes = self._column_boxes(
+                    page,
+                    footer_margin=self.footer_margin,
+                    header_margin=self.header_margin
+                )
+
+            if not column_bboxes:
+                # Fallback to simple extraction
+                text = page.get_text(sort=True)
+                if text.strip():
+                    text_blocks.append(TextBlock(
+                        text=text,
+                        bbox=(0, 0, page.rect.width, page.rect.height),
+                        page_num=page_num,
+                        block_type="text"
+                    ))
+                continue
+
+            # Extract text from each column bbox in order
+            for col_idx, col_bbox in enumerate(column_bboxes):
+                # Use get_text with clip and sort for proper word reconstruction
+                col_text = page.get_text(clip=col_bbox, sort=True)
+
+                if col_text.strip():
+                    # Try to get font info from the first block in this region
+                    blocks = page.get_text("dict", clip=col_bbox)["blocks"]
+                    avg_font_size = None
+                    font_name = None
+
+                    if blocks:
+                        font_sizes = []
+                        font_names = []
+                        for block in blocks:
+                            if block.get("type") == 0:  # Text block
+                                for line in block.get("lines", []):
+                                    for span in line.get("spans", []):
+                                        font_sizes.append(span.get("size", 0))
+                                        font_names.append(span.get("font", ""))
+
+                        if font_sizes:
+                            avg_font_size = sum(font_sizes) / len(font_sizes)
+                        if font_names:
+                            font_name = font_names[0]
+
+                    # Determine block type
+                    block_type = self._classify_block_type(
+                        tuple(col_bbox),
+                        avg_font_size,
+                        page.rect.height
+                    )
+
+                    text_blocks.append(TextBlock(
+                        text=col_text,
+                        bbox=tuple(col_bbox),
+                        page_num=page_num,
+                        font_size=avg_font_size,
+                        font_name=font_name,
+                        block_type=block_type
                     ))
 
         doc.close()
@@ -665,6 +763,302 @@ class PDFMetadataParser:
         else:
             return 'multi'
 
+    def _column_boxes_fast(self, page, footer_margin: int = 50, header_margin: int = 50) -> List[fitz.IRect]:
+        """
+        Fast column detection using simple bbox analysis (10-100x faster).
+
+        Skips expensive operations like drawing/image detection and uses
+        simple heuristics to find column boundaries.
+
+        Args:
+            page: PyMuPDF page object
+            footer_margin: Height of bottom stripe to ignore
+            header_margin: Height of top stripe to ignore
+
+        Returns:
+            List of IRect objects representing column bboxes, sorted by reading order
+        """
+        # Compute relevant page area
+        clip = +page.rect
+        clip.y1 -= footer_margin
+        clip.y0 += header_margin
+
+        # Get text blocks quickly
+        blocks = page.get_text("dict", flags=fitz.TEXTFLAGS_TEXT, clip=clip)["blocks"]
+
+        if not blocks:
+            return []
+
+        # Extract bboxes of text blocks only
+        text_bboxes = []
+        for b in blocks:
+            if b.get("type") == 0 and b.get("lines"):  # Text block with content
+                bbox = fitz.IRect(b["bbox"])
+                if not bbox.is_empty:
+                    text_bboxes.append(bbox)
+
+        if not text_bboxes:
+            return []
+
+        # Sort by position (top to bottom, left to right)
+        text_bboxes.sort(key=lambda b: (b.y0, b.x0))
+
+        # Find vertical gaps (potential column separators)
+        page_width = int(page.rect.width)
+
+        # Collect all x-ranges
+        x_ranges = [(b.x0, b.x1) for b in text_bboxes]
+
+        # Find the largest horizontal gap
+        if len(x_ranges) < 2:
+            # Single column - return whole page
+            return [fitz.IRect(0, int(clip.y0), page_width, int(clip.y1))]
+
+        # Simple approach: find x-positions where text is absent (column gaps)
+        # Build coverage map
+        x_coverage = [False] * page_width
+        for x0, x1 in x_ranges:
+            for x in range(max(0, int(x0)), min(page_width, int(x1))):
+                x_coverage[x] = True
+
+        # Find gaps
+        gaps = []
+        in_gap = False
+        gap_start = 0
+
+        for x in range(page_width):
+            if not x_coverage[x]:
+                if not in_gap:
+                    gap_start = x
+                    in_gap = True
+            else:
+                if in_gap:
+                    gap_width = x - gap_start
+                    if gap_width > 20:  # Significant gap (> 20 points)
+                        gaps.append((gap_start, x, gap_width))
+                    in_gap = False
+
+        # No significant gaps = single column
+        if not gaps:
+            return [fitz.IRect(0, int(clip.y0), page_width, int(clip.y1))]
+
+        # Find the largest gap (likely the column separator)
+        largest_gap = max(gaps, key=lambda g: g[2])
+        gap_mid = (largest_gap[0] + largest_gap[1]) // 2
+
+        # Split into left and right columns
+        left_blocks = [b for b in text_bboxes if b.x0 < gap_mid]
+        right_blocks = [b for b in text_bboxes if b.x0 >= gap_mid]
+
+        columns = []
+
+        if left_blocks:
+            left_x0 = min(b.x0 for b in left_blocks)
+            left_x1 = max(b.x1 for b in left_blocks)
+            left_y0 = min(b.y0 for b in left_blocks)
+            left_y1 = max(b.y1 for b in left_blocks)
+            columns.append(fitz.IRect(left_x0, left_y0, left_x1, left_y1))
+
+        if right_blocks:
+            right_x0 = min(b.x0 for b in right_blocks)
+            right_x1 = max(b.x1 for b in right_blocks)
+            right_y0 = min(b.y0 for b in right_blocks)
+            right_y1 = max(b.y1 for b in right_blocks)
+            columns.append(fitz.IRect(right_x0, right_y0, right_x1, right_y1))
+
+        return columns
+
+    def _column_boxes(self, page, footer_margin: int = 50, header_margin: int = 50,
+                     no_image_text: bool = True) -> List[fitz.IRect]:
+        """
+        Advanced multi-column detection using PyMuPDF.
+
+        Determines bboxes which wrap a column by intelligently detecting:
+        - Text with different background colors
+        - Text blocks and their boundaries
+        - Vertical vs horizontal text
+        - Text overlaying images
+
+        Args:
+            page: PyMuPDF page object
+            footer_margin: Height of bottom stripe to ignore
+            header_margin: Height of top stripe to ignore
+            no_image_text: Whether to ignore text written on images
+
+        Returns:
+            List of IRect objects representing column bboxes, sorted by reading order
+        """
+        paths = page.get_drawings()
+        bboxes = []
+        path_rects = []
+        img_bboxes = []
+        vert_bboxes = []
+
+        # Compute relevant page area
+        clip = +page.rect
+        clip.y1 -= footer_margin
+        clip.y0 += header_margin
+
+        def can_extend(temp, bb, bboxlist):
+            """Check if temp can be extended by bb without intersecting bboxlist items."""
+            for b in bboxlist:
+                if not self._intersects_bboxes(temp, vert_bboxes) and (
+                    b is None or b == bb or (temp & b).is_empty
+                ):
+                    continue
+                return False
+            return True
+
+        def in_bbox(bb, bboxes):
+            """Return 1-based number if a bbox contains bb, else return 0."""
+            for i, bbox in enumerate(bboxes):
+                if bb in bbox:
+                    return i + 1
+            return 0
+
+        def extend_right(bboxes, width, path_bboxes, vert_bboxes, img_bboxes):
+            """Extend bbox to the right page border where possible."""
+            for i, bb in enumerate(bboxes):
+                if in_bbox(bb, path_bboxes):
+                    continue
+                if in_bbox(bb, img_bboxes):
+                    continue
+
+                temp = +bb
+                temp.x1 = width
+
+                if self._intersects_bboxes(temp, path_bboxes + vert_bboxes + img_bboxes):
+                    continue
+
+                check = can_extend(temp, bb, bboxes)
+                if check:
+                    bboxes[i] = temp
+
+            return [b for b in bboxes if b is not None]
+
+        def clean_nblocks(nblocks):
+            """Remove duplicates and fix sequence in special cases."""
+            if len(nblocks) < 2:
+                return nblocks
+
+            # Remove duplicates
+            for i in range(len(nblocks) - 1, 0, -1):
+                if nblocks[i - 1] == nblocks[i]:
+                    del nblocks[i]
+
+            # Sort segments with same bottom value by x-coordinate
+            if not nblocks:
+                return nblocks
+
+            y1 = nblocks[0].y1
+            i0 = 0
+            i1 = -1
+
+            for i in range(1, len(nblocks)):
+                b1 = nblocks[i]
+                if abs(b1.y1 - y1) > 10:
+                    if i1 > i0:
+                        nblocks[i0:i1 + 1] = sorted(nblocks[i0:i1 + 1], key=lambda b: b.x0)
+                    y1 = b1.y1
+                    i0 = i
+                i1 = i
+
+            if i1 > i0:
+                nblocks[i0:i1 + 1] = sorted(nblocks[i0:i1 + 1], key=lambda b: b.x0)
+
+            return nblocks
+
+        # Extract vector graphics
+        for p in paths:
+            path_rects.append(p["rect"].irect)
+        path_bboxes = sorted(path_rects, key=lambda b: (b.y0, b.x0))
+
+        # Get image bboxes
+        for item in page.get_images():
+            img_bboxes.extend(page.get_image_rects(item[0]))
+
+        # Extract text blocks
+        blocks = page.get_text("dict", flags=fitz.TEXTFLAGS_TEXT, clip=clip)["blocks"]
+
+        for b in blocks:
+            bbox = fitz.IRect(b["bbox"])
+
+            if no_image_text and in_bbox(bbox, img_bboxes):
+                continue
+
+            # Check if first line is horizontal
+            if b["lines"]:
+                line0 = b["lines"][0]
+                if line0["dir"] != (1, 0):
+                    vert_bboxes.append(bbox)
+                    continue
+
+                srect = fitz.EMPTY_IRECT()
+                for line in b["lines"]:
+                    lbbox = fitz.IRect(line["bbox"])
+                    text = "".join([s["text"].strip() for s in line["spans"]])
+                    if len(text) > 1:
+                        srect |= lbbox
+                bbox = +srect
+
+                if not bbox.is_empty:
+                    bboxes.append(bbox)
+
+        # Sort by background, then position
+        bboxes.sort(key=lambda k: (in_bbox(k, path_bboxes), k.y0, k.x0))
+
+        # Extend bboxes to the right where possible
+        bboxes = extend_right(bboxes, int(page.rect.width), path_bboxes, vert_bboxes, img_bboxes)
+
+        if not bboxes:
+            return []
+
+        # Join bboxes to establish column structure
+        nblocks = [bboxes[0]]
+        bboxes = bboxes[1:]
+
+        for i, bb in enumerate(bboxes):
+            check = False
+
+            for j in range(len(nblocks)):
+                nbb = nblocks[j]
+
+                # Never join across columns
+                if bb is None or nbb.x1 < bb.x0 or bb.x1 < nbb.x0:
+                    continue
+
+                # Never join across different background colors
+                if in_bbox(nbb, path_bboxes) != in_bbox(bb, path_bboxes):
+                    continue
+
+                temp = bb | nbb
+                check = can_extend(temp, nbb, nblocks)
+                if check:
+                    break
+
+            if not check:
+                nblocks.append(bb)
+                j = len(nblocks) - 1
+                temp = nblocks[j]
+
+            check = can_extend(temp, bb, bboxes)
+            if not check:
+                nblocks.append(bb)
+            else:
+                nblocks[j] = temp
+            bboxes[i] = None
+
+        # Clean and return
+        nblocks = clean_nblocks(nblocks)
+        return nblocks
+
+    def _intersects_bboxes(self, bb, bboxes) -> bool:
+        """Check if bb intersects any bbox in bboxes list."""
+        for bbox in bboxes:
+            if not (bb & bbox).is_empty:
+                return True
+        return False
+
     def _apply_reading_order(self, text_blocks: List[TextBlock], column_layout: str) -> List[TextBlock]:
         """
         Apply proper reading order based on detected column layout.
@@ -683,69 +1077,135 @@ class PDFMetadataParser:
             # Simple top-to-bottom sorting
             return sorted(text_blocks, key=lambda b: (b.page_num, b.bbox[1]))
 
-        # For multi-column layout, we need to sort by columns
-        sorted_blocks = []
+        # For multi-column layout, use advanced column detection if PyMuPDF is available
+        if PYMUPDF_AVAILABLE:
+            return self._apply_reading_order_pymupdf(text_blocks)
 
-        # Group by page
+        # Fallback to simple column sorting
+        return self._apply_reading_order_simple(text_blocks, column_layout)
+
+    def _apply_reading_order_pymupdf(self, text_blocks: List[TextBlock]) -> List[TextBlock]:
+        """
+        Apply reading order using advanced PyMuPDF column detection.
+
+        Args:
+            text_blocks: List of text blocks
+
+        Returns:
+            Sorted list of text blocks in proper reading order
+        """
+        if not text_blocks:
+            return []
+
+        sorted_blocks = []
+        doc = fitz.open(self.pdf_path)
+
+        # Group blocks by page
+        pages_blocks = {}
+        for block in text_blocks:
+            if block.page_num not in pages_blocks:
+                pages_blocks[block.page_num] = []
+            pages_blocks[block.page_num].append(block)
+
+        # Process each page
+        for page_num in sorted(pages_blocks.keys()):
+            page = doc[page_num]
+            page_blocks = pages_blocks[page_num]
+
+            # Get column bboxes using advanced detection
+            column_bboxes = self._column_boxes(
+                page,
+                footer_margin=self.footer_margin,
+                header_margin=self.header_margin
+            )
+
+            if not column_bboxes:
+                # Fallback to simple sorting
+                page_blocks.sort(key=lambda b: (b.bbox[1], b.bbox[0]))
+                sorted_blocks.extend(page_blocks)
+                continue
+
+            # For each column bbox, extract text in reading order
+            for col_bbox in column_bboxes:
+                # Find text blocks that fall within this column bbox
+                col_blocks = []
+                for block in page_blocks:
+                    block_rect = fitz.Rect(block.bbox)
+                    # Check if block overlaps with column bbox
+                    if not (block_rect & col_bbox).is_empty:
+                        col_blocks.append(block)
+
+                # Sort blocks within column by vertical position
+                col_blocks.sort(key=lambda b: b.bbox[1])
+                sorted_blocks.extend(col_blocks)
+
+                # Remove processed blocks from page_blocks
+                for block in col_blocks:
+                    if block in page_blocks:
+                        page_blocks.remove(block)
+
+            # Add any remaining blocks (shouldn't happen, but safety check)
+            if page_blocks:
+                page_blocks.sort(key=lambda b: (b.bbox[1], b.bbox[0]))
+                sorted_blocks.extend(page_blocks)
+
+        doc.close()
+        return sorted_blocks
+
+    def _apply_reading_order_simple(self, text_blocks: List[TextBlock],
+                                    column_layout: str) -> List[TextBlock]:
+        """
+        Simple fallback column sorting (original implementation).
+
+        Args:
+            text_blocks: List of text blocks
+            column_layout: Detected column layout ('single', 'double', 'multi')
+
+        Returns:
+            Sorted list of text blocks
+        """
+        sorted_blocks = []
         pages = {}
         for block in text_blocks:
             if block.page_num not in pages:
                 pages[block.page_num] = []
             pages[block.page_num].append(block)
 
-        # Process each page
         for page_num in sorted(pages.keys()):
             page_blocks = pages[page_num]
-
             if not page_blocks:
                 continue
 
-            # Determine column boundaries
             page_width = max(block.bbox[2] for block in page_blocks)
 
             if column_layout == 'double':
-                # Two-column layout: split at middle
                 mid_point = page_width / 2
-
-                # Assign blocks to columns based on their center x-coordinate
                 left_column = []
                 right_column = []
 
                 for block in page_blocks:
                     x_center = (block.bbox[0] + block.bbox[2]) / 2
-
                     if x_center < mid_point:
                         left_column.append(block)
                     else:
                         right_column.append(block)
 
-                # Sort each column by vertical position
                 left_column.sort(key=lambda b: b.bbox[1])
                 right_column.sort(key=lambda b: b.bbox[1])
-
-                # Add left column first, then right column
                 sorted_blocks.extend(left_column)
                 sorted_blocks.extend(right_column)
 
             else:  # multi-column
-                # For 3+ columns, use clustering approach
-                # Extract x-centers
                 blocks_with_centers = [(b, (b.bbox[0] + b.bbox[2]) / 2) for b in page_blocks]
-
-                # Sort blocks by x-center to identify columns
                 blocks_with_centers.sort(key=lambda x: x[1])
-
-                # Group into columns (simple approach: divide into thirds)
                 num_columns = 3
                 column_width = page_width / num_columns
-
                 columns = [[] for _ in range(num_columns)]
 
                 for block, x_center in blocks_with_centers:
                     col_idx = min(int(x_center / column_width), num_columns - 1)
                     columns[col_idx].append(block)
 
-                # Sort each column by vertical position and add to result
                 for column in columns:
                     column.sort(key=lambda b: b.bbox[1])
                     sorted_blocks.extend(column)
@@ -947,3 +1407,68 @@ class PDFMetadataParser:
                 saved_paths.append(str(filepath))
 
         return saved_paths
+
+    def visualize_columns(self, output_path: Optional[str] = None) -> str:
+        """
+        Create a visual representation of detected columns by drawing borders
+        around detected column bboxes and numbering them.
+
+        This is useful for debugging and understanding how the column detection works.
+
+        Args:
+            output_path: Optional output path for the annotated PDF.
+                        If not provided, uses "<original_name>-columns.pdf"
+
+        Returns:
+            Path to the annotated PDF file
+        """
+        if not PYMUPDF_AVAILABLE:
+            raise RuntimeError("PyMuPDF is required for column visualization")
+
+        if output_path is None:
+            output_path = str(self.pdf_path).replace(".pdf", "-columns.pdf")
+
+        doc = fitz.open(self.pdf_path)
+
+        for page_num, page in enumerate(doc):
+            # Remove any geometry issues
+            page.wrap_contents()
+
+            # Get column bboxes
+            if self.fast_column_detection:
+                column_bboxes = self._column_boxes_fast(
+                    page,
+                    footer_margin=self.footer_margin,
+                    header_margin=self.header_margin
+                )
+            else:
+                column_bboxes = self._column_boxes(
+                    page,
+                    footer_margin=self.footer_margin,
+                    header_margin=self.header_margin
+                )
+
+            # Draw rectangles and numbers
+            shape = page.new_shape()
+
+            for i, rect in enumerate(column_bboxes):
+                # Draw red border
+                shape.draw_rect(rect)
+
+                # Add sequence number
+                shape.insert_text(
+                    rect.tl + (5, 15),
+                    str(i),
+                    color=fitz.pdfcolor["red"],
+                    fontsize=12
+                )
+
+            # Finish with red color
+            shape.finish(color=fitz.pdfcolor["red"])
+            shape.commit()
+
+        # Save annotated document
+        doc.ez_save(output_path)
+        doc.close()
+
+        return output_path
