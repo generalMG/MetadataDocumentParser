@@ -57,3 +57,6 @@ Thumbs.db
 .ipynb_checkpoints/
 
 
+# Other
+compare_strict_mode.py
+test_strict_mode.py
