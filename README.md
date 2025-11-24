@@ -13,7 +13,10 @@ A comprehensive, layout-aware PDF parser for extracting text, images, and tables
   - Respects column boundaries and proper reading order
   - Configurable header/footer margins for improved accuracy
 - **Column Visualization**: Debug tool to visualize detected column boundaries
-- **Formula Detection & LaTeX Conversion**: Detects mathematical formulas and converts to LaTeX (classic ML, no GPU required)
+- **Formula Detection & LaTeX Conversion**:
+  - Detects mathematical formulas using heuristic analysis
+  - **Strict Mode**: Reduces false positives by filtering non-formula text
+  - **External OCR Support**: Interface for high-quality LaTeX conversion (e.g., Mathpix)
 - **Image Extraction**: Extracts embedded images with position and metadata
 - **Table Extraction**: Advanced table detection and extraction
 - **Multiple Extraction Methods**: Compare different libraries for optimal results
@@ -338,25 +341,40 @@ print(f"Annotated PDF saved to: {output_path}")
 
 ### 7. Formula Detection and LaTeX Conversion
 
+**Basic Usage (Heuristic):**
 ```python
 parser = PDFMetadataParser("document.pdf")
 
 # Extract formulas with heuristic detection (no GPU/DL required)
+# Use strict_mode=True to reduce false positives
 result = parser.parse(
     extract_text=True,
-    extract_formulas=True
+    extract_formulas=True,
+    strict_mode=True
+)
+```
+
+**Advanced Usage (External OCR):**
+For production-quality LaTeX, you can use an external OCR service like Mathpix.
+
+```python
+from metadata_document_parser.extractors.ocr import MathpixOCR
+
+# Initialize OCR strategy
+ocr = MathpixOCR(app_id="YOUR_APP_ID", app_key="YOUR_APP_KEY")
+
+result = parser.parse(
+    extract_text=True,
+    extract_formulas=True,
+    strict_mode=True,
+    ocr_strategy=ocr
 )
 
 # Access detected formulas
 for formula in result.formulas:
     print(f"Formula: {formula.formula_text}")
-    print(f"LaTeX:   {formula.latex}")
+    print(f"LaTeX:   {formula.latex}")  # High-quality LaTeX from OCR
     print(f"Confidence: {formula.confidence:.2f}")
-
-    # Save formula as image
-    if formula.image_bytes:
-        with open(f"formula_{formula.formula_index}.png", "wb") as f:
-            f.write(formula.image_bytes)
 ```
 
 ### 8. Simple Reading Order (No Column Detection)
@@ -410,6 +428,8 @@ Parse the PDF document.
 - `table_method` (str): Method for table extraction ("camelot" or "tabula")
 - `layout_aware` (bool): Preserve layout information
 - `column_aware` (bool): Detect columns and fix reading order (NEW)
+- `strict_mode` (bool): Enable stricter formula detection to reduce false positives (default: False)
+- `ocr_strategy` (ExternalOCR): Optional OCR strategy for high-quality LaTeX conversion (e.g., MathpixOCR)
 
 **Returns:** `ParsedDocument` object containing all extracted data
 

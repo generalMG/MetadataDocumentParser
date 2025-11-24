@@ -60,3 +60,4 @@ Thumbs.db
 # Other
 compare_strict_mode.py
 test_strict_mode.py
+test_ocr_integration.py
