@@ -1,7 +1,7 @@
 import time
 import fitz
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 try:
     from toon_format import encode as toon_encode, EncodeOptions
