@@ -62,7 +62,9 @@ class PDFMetadataParser:
         text_method: str = "pymupdf",
         table_method: str = "camelot",
         layout_aware: bool = True,
-        column_aware: bool = True
+        column_aware: bool = True,
+        strict_mode: bool = False,
+        ocr_strategy: Optional[Any] = None
     ) -> ParsedDocument:
         """
         Parse the PDF document and extract all requested content.
@@ -113,7 +115,11 @@ class PDFMetadataParser:
 
         # Extract formulas
         if extract_formulas:
-            result.formulas = self.formula_extractor.extract_formulas(result.text_blocks)
+            result.formulas = self.formula_extractor.extract_formulas(
+                result.text_blocks, 
+                strict_mode=strict_mode,
+                ocr_strategy=ocr_strategy
+            )
 
         result.parsing_time = time.time() - start_time
         return result
