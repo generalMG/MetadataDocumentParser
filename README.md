@@ -21,6 +21,7 @@ A comprehensive, layout-aware PDF parser for extracting text, images, and tables
   - **TOON format** (default): 10-60% fewer tokens vs JSON - ideal for LLM input
   - **JSON format**: Standard JSON export when needed
   - Built-in token comparison to measure savings
+- **Modular Architecture**: Clean, extensible design with separate modules for text, image, table, and formula extraction
 
 ## What is TOON?
 
@@ -135,7 +136,7 @@ uv pip install -r requirements.txt
 ### Basic Usage
 
 ```python
-from pdf_parser import PDFMetadataParser
+from metadata_document_parser import PDFMetadataParser
 
 # Initialize parser
 parser = PDFMetadataParser("document.pdf")
